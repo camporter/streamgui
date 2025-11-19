@@ -1,0 +1,30 @@
+[package]
+name = "streamgui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A minimal stream interface and navigation tool for Twitch."
+readme = "README.md"
+
+[dependencies]
+tokio = {version = "1.47.1", features = ["net", "rt-multi-thread", "process"]}
+eframe = "0.33.2"
+
+egui_extras = { version = "0.33.2", features = ["all_loaders"] }
+
+reqwest = { version = "0.12.23", features = ["json"] }
+serde = "1.0.228"
+serde_derive = "1.0.228"
+
+directories-next = "2.0.0"
+
+hyper = { version = "1.7.0", features = ["server"] }
+http-body-util = "0.1.3"
+hyper-util = "0.1.17"
+
+twitch_api = { version = "0.7.2", features = ["typed-builder", "helix", "client", "reqwest"] }
+open = "5.3.2"
+url = "2.5.7"
+toml = "0.9.8"
+log = "0.4.28"
+env_logger = "0.11.8"
