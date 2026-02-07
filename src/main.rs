@@ -10,20 +10,20 @@ use crate::twitch::{
     TwitchError, check_login, get_followed_streams, get_streams, get_top_categories,
 };
 use directories_next::ProjectDirs;
-use eframe::egui;
 use eframe::egui::{
     Align, Color32, Context, FontId, Frame, InnerResponse, Label, Layout, RichText, ScrollArea,
     Sense, Style, TextEdit, Theme, Ui, UiBuilder, Vec2, Widget,
 };
+use eframe::{egui, glow};
 use log::{error, info};
 use serde_derive::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::runtime::Runtime;
-use tokio::task::JoinSet;
 use twitch_api::helix::Scope::{ChannelReadSubscriptions, UserReadFollows, UserReadSubscriptions};
 use twitch_api::helix::streams::Stream;
 use twitch_api::twitch_oauth2::{ClientId, ImplicitUserTokenBuilder};
@@ -143,6 +143,7 @@ enum AppView {
     FollowedLive,
     Settings,
     CategoryView,
+    Watching,
 }
 
 enum TwitchOption {
@@ -163,6 +164,11 @@ struct TwitchMessage {
     opt: TwitchOption,
 }
 
+struct StreamProcess {
+    stream: Stream,
+    process: Child,
+}
+
 struct App {
     token: String,
     config: AppConfig,
@@ -177,7 +183,7 @@ struct App {
     focused_category_streams: Option<Vec<Stream>>,
     send: Sender<TwitchMessage>,
     recv: Receiver<TwitchMessage>,
-    streamlink_tasks: JoinSet<()>,
+    active_streams: HashMap<String, StreamProcess>,
 }
 
 impl Default for App {
@@ -199,7 +205,7 @@ impl Default for App {
             focused_category_streams: None,
             send,
             recv,
-            streamlink_tasks: JoinSet::new(),
+            active_streams: HashMap::new(),
         }
     }
 }
@@ -224,14 +230,27 @@ impl App {
         self.focused_category_streams = None;
     }
 
-    fn start_stream(&mut self, stream: Stream) {
-        self.streamlink_tasks.spawn(async move {
-            let _child = Command::new("streamlink")
-                .arg("--twitch-low-latency")
-                .arg(format!("https://twitch.tv/{}", stream.user_name))
-                .arg("best")
-                .spawn();
-        });
+    fn start_stream(&mut self, stream: &Stream) {
+        let username = stream.user_name.clone();
+
+        // check if stream already started
+        if self.active_streams.contains_key(username.as_str()) {
+            return;
+        }
+        let child = Command::new("streamlink")
+            .arg("--twitch-low-latency")
+            .arg(format!("https://twitch.tv/{}", username))
+            .arg("best")
+            .spawn()
+            .expect("failed to spawn streamlink task");
+
+        let stream_process = StreamProcess {
+            stream: stream.clone(),
+            process: child,
+        };
+
+        self.active_streams
+            .insert(username.to_string(), stream_process);
     }
 
     fn request_streams(&self, ctx: Context) {
@@ -355,10 +374,22 @@ impl App {
             },
         )
     }
+
+    fn monitor_children(&mut self) {
+        self.active_streams.retain(
+            |_, stream_process| match stream_process.process.try_wait() {
+                Ok(Some(_status)) => false,
+                Ok(None) => true,
+                Err(_err) => false,
+            },
+        );
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.monitor_children();
+
         if let Ok(added) = self.recv.try_recv() {
             let TwitchMessage { opt, .. } = added;
             match opt {
@@ -376,9 +407,20 @@ impl eframe::App for App {
                         }
                     }
                 }
-                TopCategoriesResult(result) => {
-                    self.categories = Some(result.unwrap());
-                }
+                TopCategoriesResult(result) => match result {
+                    Ok(categories) => {
+                        self.categories = Some(categories);
+                        self.error_message = None;
+                    }
+                    Err(e) => match e {
+                        TwitchError::Client(cre) => {
+                            self.error_message = Some(cre.to_string());
+                        }
+                        _ => {
+                            self.error_message = Some(e.to_string());
+                        }
+                    },
+                },
                 StreamsResult(result) => {
                     self.streams = Some(result.unwrap());
                 }
@@ -443,6 +485,14 @@ impl eframe::App for App {
             }
 
             ui.separator();
+            let active_count = self.active_streams.len();
+
+            if active_count > 0 {
+                if ui.button(format!("Watching {}", active_count)).clicked() {
+                    self.current_view = AppView::Watching;
+                }
+                ui.separator();
+            }
 
             if ui.button("Settings").clicked() {
                 self.current_view = AppView::Settings;
@@ -474,12 +524,21 @@ impl eframe::App for App {
                 }
 
                 let stream = self.focused_stream.clone().unwrap();
-                ui.heading(stream.title.as_str());
                 ui.heading(stream.user_name.as_str());
                 ui.separator();
-                if ui.button("Watch").clicked() {
-                    self.start_stream(stream);
-                }
+                ui.label(RichText::new(stream.title.as_str()).font(FontId::proportional(16.0)));
+                ui.separator();
+                ui.label(stream.game_name.as_str());
+                ui.label(format!("{} viewers", stream.viewer_count));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Watch").clicked() {
+                        self.start_stream(&stream);
+                    }
+                    ui.hyperlink_to("Twitch", format!("https://twitch.tv/{}", stream.user_login));
+                });
+                let sized_thumbnail = stream.thumbnail_url.replace("{width}x{height}", "200x200");
+                ui.image(sized_thumbnail.as_str());
             });
         }
 
@@ -526,7 +585,6 @@ impl eframe::App for App {
                         ui.heading("Categories");
                         if ui.button("🔄").clicked() {
                             self.request_categories(ctx.clone());
-                            // TODO resend categories request
                         }
 
                         let scroll_area = ScrollArea::vertical();
@@ -545,7 +603,7 @@ impl eframe::App for App {
                                         self.focused_category = Some(category.clone());
                                         self.focused_category_streams = None;
 
-                                        self.request_category_streams(ctx.clone(), &category);
+                                        self.request_category_streams(ctx.clone(), category);
                                     }
                                 }
                             },
@@ -635,9 +693,57 @@ impl eframe::App for App {
                             },
                         );
                     }
+                    AppView::Watching => {
+                        ui.heading("Watching");
+
+                        let scroll_area = ScrollArea::vertical();
+                        scroll_area.show_rows(
+                            ui,
+                            100.0,
+                            self.active_streams.len(),
+                            |ui, _row_range| {
+                                for (_, stream_process) in self.active_streams.iter() {
+                                    let stream_button =
+                                        self.build_stream_button(stream_process.stream.clone(), ui);
+                                    if stream_button.response.clicked() {
+                                        self.focused_stream =
+                                            Option::from(stream_process.stream.clone());
+                                    }
+                                }
+                            },
+                        );
+                    }
                 }
             })
         });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&glow::Context>) {
+        // try terminating the streamlink child processes and wait for them to go away
+        use nix::{
+            sys::signal::{Signal::SIGTERM, kill},
+            unistd::Pid,
+        };
+        self.active_streams
+            .iter_mut()
+            .for_each(|(_, stream_process)| {
+                if let Some(pid) = stream_process.process.id() {
+                    if let Err(e) =
+                        kill(Pid::from_raw(pid.try_into().expect("invalid pid")), SIGTERM)
+                    {
+                        eprintln!("Failed to terminate child process: {}", e);
+                    }
+                } else {
+                    stream_process
+                        .process
+                        .start_kill()
+                        .expect("Could not kill streamlink child");
+                }
+            });
+
+        while !self.active_streams.is_empty() {
+            self.monitor_children();
+        }
     }
 }
 

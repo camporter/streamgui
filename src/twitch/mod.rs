@@ -22,10 +22,7 @@ impl fmt::Display for TwitchError {
 
 pub async fn check_login(token: String) -> bool {
     let client: TwitchClient<reqwest::Client> = TwitchClient::new();
-    match get_token(client, token).await {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    get_token(client, token).await.is_ok()
 }
 
 pub async fn get_token(
