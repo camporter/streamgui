@@ -1,6 +1,6 @@
 [package]
 name = "streamgui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "A minimal stream interface and navigation tool for Twitch."
@@ -11,7 +11,7 @@ tokio = {version = "1.47.1", features = ["net", "rt-multi-thread", "process"]}
 eframe = "0.33.2"
 
 egui_extras = { version = "0.33.3", features = ["all_loaders"] }
-image = { version = "*", features = ["jpeg"]}
+image = { version = "0.25.9", features = ["jpeg"]}
 reqwest = { version = "0.12.23", features = ["json"] }
 serde = "1.0.228"
 serde_derive = "1.0.228"
