@@ -2,6 +2,8 @@
 
 streamgui is a minimal stream interface and navigation tool for Twitch.
 
+![crates.io](https://img.shields.io/crates/v/streamgui.svg)
+
 It's somewhat ugly at the moment and probably will crash on you. This was mainly an excuse to try egui out :)
 
 ![](docs/screenshots/list_categories.png)
