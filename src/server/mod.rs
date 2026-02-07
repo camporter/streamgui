@@ -1,22 +1,23 @@
-use std::convert::Infallible;
-use std::net::SocketAddr;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
-use hyper::{Method, Request, Response, StatusCode};
 use hyper::server::conn::http1::Builder;
 use hyper::service::service_fn;
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use log::info;
+use std::convert::Infallible;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
-
 
 pub const PORT: u16 = 20451;
 
 pub async fn run() {
     let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
 
-    let listener = TcpListener::bind(addr).await.expect("Unable to bind to address");
+    let listener = TcpListener::bind(addr)
+        .await
+        .expect("Unable to bind to address");
 
     info!("streamgui listening on: http://{}", addr);
 
@@ -36,8 +37,7 @@ pub async fn run() {
                         info!("http error: {}", err);
                     }
                 });
-
-            },
+            }
             Err(e) => {
                 info!("failed to accept connection: {}", e);
             }
@@ -45,8 +45,9 @@ pub async fn run() {
     }
 }
 
-async fn http_server_handler(req: Request<hyper::body::Incoming>) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
-
+async fn http_server_handler(
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     match (req.method(), req.uri().path()) {
         // todo have some js do fancy things
         (&Method::GET, "/") => Ok(Response::new(full("Copy the token out of the URL above!"))),
@@ -59,7 +60,6 @@ async fn http_server_handler(req: Request<hyper::body::Incoming>) -> Result<Resp
         }
     }
 }
-
 
 fn empty() -> BoxBody<Bytes, hyper::Error> {
     Empty::<Bytes>::new()

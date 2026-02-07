@@ -1,26 +1,34 @@
 mod server;
 mod twitch;
 
+use crate::TwitchOption::{
+    GetCategoryStreams, GetCategoryStreamsResult, GetFollowedStreams, GetFollowedStreamsResult,
+    GetStreams, GetTopCategories, LoginResult, StreamsResult, TopCategoriesResult,
+};
+use crate::server::PORT;
+use crate::twitch::{
+    TwitchError, check_login, get_followed_streams, get_streams, get_top_categories,
+};
+use directories_next::ProjectDirs;
+use eframe::egui;
+use eframe::egui::{
+    Align, Color32, Context, FontId, Frame, InnerResponse, Label, Layout, RichText, ScrollArea,
+    Sense, Style, TextEdit, Theme, Ui, UiBuilder, Vec2, Widget,
+};
+use log::{error, info};
+use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::fs::read_to_string;
 use std::path::PathBuf;
-use directories_next::ProjectDirs;
-use eframe::egui;
-use eframe::egui::{Align, Color32, Context, FontId, Frame, Label, Layout, RichText, ScrollArea, Sense, Style, TextEdit, Theme, UiBuilder, Widget};
-use serde_derive::{Deserialize, Serialize};
-use tokio::runtime::Runtime;
 use std::sync::mpsc::{Receiver, Sender};
-use log::{error, info};
 use tokio::process::Command;
+use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 use twitch_api::helix::Scope::{ChannelReadSubscriptions, UserReadFollows, UserReadSubscriptions};
 use twitch_api::helix::streams::Stream;
 use twitch_api::twitch_oauth2::{ClientId, ImplicitUserTokenBuilder};
 use twitch_api::types::{CategoryId, TwitchCategory};
 use url::Url;
-use crate::server::PORT;
-use crate::twitch::{check_login, get_followed_streams, get_streams, get_top_categories, TwitchError};
-use crate::TwitchOption::{GetCategoryStreams, GetCategoryStreamsResult, GetFollowedStreams, GetFollowedStreamsResult, GetStreams, GetTopCategories, LoginResult, StreamsResult, TopCategoriesResult};
 
 const CLIENT_ID: &str = "ualshng9w0vvyb4w8fql0z4dt3cz8k";
 
@@ -32,12 +40,11 @@ fn main() {
     let _enter = rt.enter();
 
     // internal server for oauth
-    std::thread::spawn(move || {
-        rt.block_on(server::run())
-    });
+    std::thread::spawn(move || rt.block_on(server::run()));
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 600.0])
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([800.0, 600.0])
             .with_min_inner_size([800.0, 600.0]),
         ..Default::default()
     };
@@ -50,16 +57,15 @@ fn main() {
             let app = App::default();
 
             Ok(Box::new(app))
-        })
-    ).expect("failed to render app");
+        }),
+    )
+    .expect("failed to render app");
 }
-
 
 #[derive(Deserialize, Serialize)]
 struct AppConfig {
     token: Option<String>,
 }
-
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -69,7 +75,6 @@ impl Default for AppConfig {
 
 impl AppConfig {
     fn save(&self) {
-
         match Self::get_path() {
             Some(path) => {
                 let file_content = toml::to_string(&self).unwrap();
@@ -84,13 +89,10 @@ impl AppConfig {
     fn load() -> AppConfig {
         match Self::get_path() {
             Some(path) => {
-
                 let file_contents = read_to_string(path).expect("failed to read config file");
 
                 match toml::from_str::<AppConfig>(file_contents.as_str()) {
-                    Ok(app_config) => {
-                        app_config
-                    }
+                    Ok(app_config) => app_config,
                     Err(e) => {
                         panic!("failed to parse config file: {}", e);
                     }
@@ -112,7 +114,12 @@ impl AppConfig {
                 let mut config_path = proj_dir.config_dir().to_path_buf();
 
                 if !config_path.exists() {
-                    fs::create_dir_all(&config_path).unwrap_or_else(|_| panic!("failed to create config directory: {}", config_path.display()));
+                    fs::create_dir_all(&config_path).unwrap_or_else(|_| {
+                        panic!(
+                            "failed to create config directory: {}",
+                            config_path.display()
+                        )
+                    });
                 }
                 config_path.push("config.toml");
 
@@ -124,9 +131,7 @@ impl AppConfig {
                 info!("Using config file: {}", config_path.display());
                 Some(config_path)
             }
-            None => {
-                None
-            }
+            None => None,
         }
     }
 }
@@ -182,7 +187,7 @@ impl Default for App {
 
         Self {
             token: config.token.clone().unwrap_or_default(),
-            config: config,
+            config,
             login_pending: true,
             current_view: AppView::Login,
             error_message: None,
@@ -229,33 +234,133 @@ impl App {
         });
     }
 
-    fn request_streams(&mut self, ctx: Option<Context>) {
+    fn request_streams(&self, ctx: Context) {
         info!("Requesting streams");
-        let req = TwitchMessage{
+        let req = TwitchMessage {
             token: Option::from(self.token.clone()),
-            opt: GetStreams(None)
+            opt: GetStreams(None),
+        };
+        send_req(req, self.send.clone(), Some(ctx));
+    }
+
+    fn request_categories(&self, ctx: Context) {
+        let req = TwitchMessage {
+            token: Option::from(self.token.clone()),
+            opt: GetTopCategories(None),
+        };
+        send_req(req, self.send.clone(), Some(ctx));
+    }
+
+    fn request_category_streams(&self, ctx: Context, category: &TwitchCategory) {
+        let req = TwitchMessage {
+            token: Option::from(self.token.clone()),
+            opt: GetCategoryStreams(category.id.clone()),
+        };
+        send_req(req, self.send.clone(), Some(ctx));
+    }
+
+    fn request_followed(&self, ctx: Option<Context>) {
+        let req = TwitchMessage {
+            token: Option::from(self.token.clone()),
+            opt: GetFollowedStreams,
         };
         send_req(req, self.send.clone(), ctx);
     }
 
-    fn request_categories(&mut self, ctx: Option<Context>) {
-        let req = TwitchMessage{token: Option::from(self.token.clone()), opt:
-        GetTopCategories(None)};
-        send_req(req, self.send.clone(), ctx);
+    fn build_stream_button(&self, stream: Stream, ui: &mut Ui) -> InnerResponse<()> {
+        ui.scope_builder(
+            UiBuilder::new()
+                .id_salt(stream.id.to_string())
+                .sense(Sense::click()),
+            |ui| {
+                let response = ui.response();
+                let visuals = ui.style().interact(&response);
+                let text_color = visuals.text_color();
+
+                Frame::canvas(ui.style())
+                    .fill(visuals.bg_fill)
+                    .stroke(visuals.bg_stroke)
+                    .inner_margin(
+                        Vec2::splat(visuals.expansion) - Vec2::splat(visuals.bg_stroke.width),
+                    )
+                    .outer_margin(-Vec2::splat(visuals.expansion))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_height(100.0);
+                        // ui.add_space(20.0);
+                        ui.horizontal_centered(|ui| {
+                            ui.vertical_centered(|ui| {
+                                Label::new(
+                                    RichText::new(stream.user_name.as_str())
+                                        .color(text_color)
+                                        .size(20.0),
+                                )
+                                .selectable(false)
+                                .ui(ui);
+                                Label::new(
+                                    RichText::new(stream.title.as_str())
+                                        .color(text_color)
+                                        .size(12.0),
+                                )
+                                .selectable(false)
+                                .ui(ui);
+
+                                let sized_thumbnail =
+                                    stream.thumbnail_url.replace("{width}x{height}", "200x200");
+                                ui.image(sized_thumbnail.as_str());
+                            });
+                        });
+                    });
+            },
+        )
     }
 
-    fn request_followed(&mut self, ctx: Option<Context>) {
-        let req = TwitchMessage{token: Option::from(self.token.clone()), opt:
-        GetFollowedStreams};
-        send_req(req, self.send.clone(), ctx);
+    fn build_category_button(&self, category: TwitchCategory, ui: &mut Ui) -> InnerResponse<()> {
+        ui.scope_builder(
+            UiBuilder::new()
+                .id_salt(category.id.to_string())
+                .sense(Sense::click()),
+            |ui| {
+                let response = ui.response();
+                let visuals = ui.style().interact(&response);
+                let text_color = visuals.text_color();
+
+                Frame::canvas(ui.style())
+                    .fill(visuals.bg_fill)
+                    .stroke(visuals.bg_stroke)
+                    .inner_margin(
+                        Vec2::splat(visuals.expansion) - Vec2::splat(visuals.bg_stroke.width),
+                    )
+                    .outer_margin(-Vec2::splat(visuals.expansion))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_height(100.0);
+                        // ui.add_space(20.0);
+                        ui.horizontal_centered(|ui| {
+                            ui.vertical_centered(|ui| {
+                                Label::new(
+                                    RichText::new(category.name.as_str())
+                                        .color(text_color)
+                                        .size(20.0),
+                                )
+                                .selectable(false)
+                                .ui(ui);
+
+                                let sized_box_art =
+                                    category.box_art_url.replace("{width}x{height}", "285x380");
+                                ui.image(sized_box_art.as_str());
+                            });
+                        });
+                    });
+            },
+        )
     }
 }
-
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         if let Ok(added) = self.recv.try_recv() {
-            let TwitchMessage { opt, ..} = added;
+            let TwitchMessage { opt, .. } = added;
             match opt {
                 LoginResult(result) => {
                     if let AppView::Login = self.current_view {
@@ -275,7 +380,6 @@ impl eframe::App for App {
                     self.categories = Some(result.unwrap());
                 }
                 StreamsResult(result) => {
-
                     self.streams = Some(result.unwrap());
                 }
                 GetFollowedStreamsResult(result) => {
@@ -299,9 +403,9 @@ impl eframe::App for App {
                 ui.spinner();
             });
             // auto login
-            let req = TwitchMessage{
+            let req = TwitchMessage {
                 token: Option::from(self.token.clone()),
-                opt: TwitchOption::LoginCheck
+                opt: TwitchOption::LoginCheck,
             };
             send_req(req, self.send.clone(), Some(ctx.clone()));
             self.login_pending = false;
@@ -309,7 +413,6 @@ impl eframe::App for App {
         } else {
             self.login_pending = false;
         }
-
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("streamgui");
@@ -324,11 +427,11 @@ impl eframe::App for App {
 
             if ui.button("Categories").clicked() {
                 self.current_view = AppView::Categories;
-                self.request_categories(Some(ctx.clone()));
+                self.request_categories(ctx.clone());
             }
             if ui.button("Streams").clicked() {
                 self.current_view = AppView::Streams;
-                self.request_streams(Some(ctx.clone()));
+                self.request_streams(ctx.clone());
             }
 
             ui.separator();
@@ -351,11 +454,16 @@ impl eframe::App for App {
         });
 
         if self.error_message.is_some() {
-            egui::TopBottomPanel::bottom("bottom_panel").resizable(false).show(ctx, |ui| {
-                let msg = self.error_message.clone();
-                ui.label(RichText::new(msg.unwrap().as_str
-                ()).font(FontId::proportional(20.0)).color(Color32::RED));
-            });
+            egui::TopBottomPanel::bottom("bottom_panel")
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let msg = self.error_message.clone();
+                    ui.label(
+                        RichText::new(msg.unwrap().as_str())
+                            .font(FontId::proportional(20.0))
+                            .color(Color32::RED),
+                    );
+                });
         }
 
         if self.focused_stream.is_some() {
@@ -377,24 +485,28 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
-
                 match self.current_view {
                     AppView::Login => {
                         ui.heading("Login");
-                        ui.label("Opens a browser to authorize streamgui with Twitch. Paste the \
-                        token from the page into the box and then log in.");
+                        ui.label(
+                            "Opens a browser to authorize streamgui with Twitch. Paste the \
+                        token from the page into the box and then log in.",
+                        );
                         if ui.button("Open browser").clicked() {
-
                             let client_id = ClientId::new(CLIENT_ID.to_owned());
 
-                            let redirect_url = Url::parse(format!
-                            ("http://localhost:{PORT}").as_str()).expect("Invalid redirect url");
+                            let redirect_url =
+                                Url::parse(format!("http://localhost:{PORT}").as_str())
+                                    .expect("Invalid redirect url");
 
-
-                            let mut builder = ImplicitUserTokenBuilder::new(client_id,
-                                                                            redirect_url)
-                                .set_scopes(vec!(ChannelReadSubscriptions, UserReadFollows,
-                                                 UserReadSubscriptions));
+                            let mut builder =
+                                ImplicitUserTokenBuilder::new(client_id, redirect_url).set_scopes(
+                                    vec![
+                                        ChannelReadSubscriptions,
+                                        UserReadFollows,
+                                        UserReadSubscriptions,
+                                    ],
+                                );
 
                             let (url, _csrf_token) = builder.generate_url();
 
@@ -403,135 +515,125 @@ impl eframe::App for App {
                         ui.label("paste token:");
                         ui.add(TextEdit::singleline(&mut self.token).password(true));
                         if ui.button("Login").clicked() {
-                            let req = TwitchMessage{
+                            let req = TwitchMessage {
                                 token: Option::from(self.token.clone()),
-                                opt: TwitchOption::LoginCheck
+                                opt: TwitchOption::LoginCheck,
                             };
                             send_req(req, self.send.clone(), Some(ctx.clone()));
                         }
-                    },
+                    }
                     AppView::Categories => {
                         ui.heading("Categories");
                         if ui.button("🔄").clicked() {
+                            self.request_categories(ctx.clone());
                             // TODO resend categories request
                         }
 
                         let scroll_area = ScrollArea::vertical();
 
-                        scroll_area.show_rows(ui, 100.0, self
-                            .categories.iter().len(), |ui, _row_range| {
-                            for category in self.categories.iter().flatten() {
+                        scroll_area.show_rows(
+                            ui,
+                            100.0,
+                            self.categories.iter().len(),
+                            |ui, _row_range| {
+                                for category in self.categories.iter().flatten() {
+                                    let category_button =
+                                        self.build_category_button(category.clone(), ui);
 
-                                let category_button = ui.scope_builder(
-                                    UiBuilder::new().id_salt(category.id.to_string()).sense(Sense::click()),
-                                    |ui| {
-                                        let response = ui.response();
-                                        let visuals = ui.style().interact(&response);
-                                        let text_color = visuals.text_color();
+                                    if category_button.response.clicked() {
+                                        self.current_view = AppView::CategoryView;
+                                        self.focused_category = Some(category.clone());
+                                        self.focused_category_streams = None;
 
-                                        Frame::canvas(ui.style())
-                                            .fill(visuals.bg_fill)
-                                            .stroke(visuals.bg_stroke)
-                                            .inner_margin(ui.spacing().menu_margin)
-                                            .show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.add_space(20.0);
-                                                ui.vertical_centered(|ui| {
-                                                    Label::new(
-                                                        RichText::new(category.name.as_str())
-                                                            .color(text_color)
-                                                            .size(20.0)
-                                                    )
-                                                        .selectable(false)
-                                                        .ui(ui);
-                                                })
-                                            });
+                                        self.request_category_streams(ctx.clone(), &category);
                                     }
-                                );
-
-                                if category_button.response.clicked() {
-                                    self.current_view = AppView::CategoryView;
-                                    self.focused_category = Some(category.clone());
-                                    self.focused_category_streams = None;
-
-                                    let req = TwitchMessage {
-                                        token: Option::from(self.token.clone()),
-                                        opt: GetCategoryStreams(category.id.clone()),
-                                    };
-                                    send_req(req, self.send.clone(), Some(ctx.clone()));
                                 }
-                            }
-                        });
-                    },
+                            },
+                        );
+                    }
                     AppView::Streams => {
                         ui.heading("Streams");
                         if ui.button("🔄").clicked() {
-                            self.request_streams(Some(ctx.clone()));
+                            self.request_streams(ctx.clone());
                         }
 
                         let scroll_area = ScrollArea::vertical();
 
-                        scroll_area.show_rows(ui, 100.0, self
-                            .streams.iter().len(), |ui, _row_range| {
-                            for stream in self.streams.iter().flatten() {
-                                if ui.button(stream.title.as_str()).clicked() {
-                                    self.focused_stream = Option::from(stream.clone());
+                        scroll_area.show_rows(
+                            ui,
+                            100.0,
+                            self.streams.iter().len(),
+                            |ui, _row_range| {
+                                for stream in self.streams.iter().flatten() {
+                                    let stream_button =
+                                        self.build_stream_button(stream.clone(), ui);
+
+                                    if stream_button.response.clicked() {
+                                        self.focused_stream = Option::from(stream.clone());
+                                    }
                                 }
-                                ui.label(stream.user_name.as_str());
-                            }
-                        });
-                    },
+                            },
+                        );
+                    }
                     AppView::FollowedLive => {
                         ui.heading("Followed Live");
 
                         let scroll_area = ScrollArea::vertical();
 
-                        scroll_area.show_rows(ui, 100.0, self
-                            .followed_streams.iter().len(), |ui, _row_range| {
-                            for stream in self.followed_streams.iter().flatten() {
-                                if ui.button(stream.title.as_str()).clicked() {
-                                    self.focused_stream = Option::from(stream.clone());
+                        scroll_area.show_rows(
+                            ui,
+                            100.0,
+                            self.followed_streams.iter().len(),
+                            |ui, _row_range| {
+                                for stream in self.followed_streams.iter().flatten() {
+                                    let stream_button =
+                                        self.build_stream_button(stream.clone(), ui);
+                                    if stream_button.response.clicked() {
+                                        self.focused_stream = Option::from(stream.clone());
+                                    }
                                 }
-                                ui.label(stream.user_name.as_str());
-                            }
-                        });
-                    },
+                            },
+                        );
+                    }
                     AppView::Settings => {
                         ui.heading("Settings");
                     }
                     AppView::CategoryView => {
-
                         if self.focused_category.is_none() {
                             // go back if no focused category
                             self.current_view = AppView::Categories;
                             return;
                         }
 
+                        let category = self.focused_category.clone().unwrap();
+
                         ui.horizontal(|ui| {
                             if ui.button("⬅").clicked() {
                                 self.current_view = AppView::Categories;
                             }
                             if ui.button("🔄").clicked() {
-                                // TODO resend category streams request
+                                self.request_category_streams(ctx.clone(), &category);
                             }
                         });
-
-                        let category = self.focused_category.clone().unwrap();
 
                         ui.heading(category.name.as_str());
                         ui.separator();
 
                         let scroll_area = ScrollArea::vertical();
-                        scroll_area.show_rows(ui, 100.0, self.focused_category_streams.iter().len
-                        (), |ui, _row_range| {
-                            for stream in self.focused_category_streams.iter().flatten() {
-                                if ui.button(stream.title.as_str()).clicked() {
-                                    self.focused_stream = Option::from(stream.clone());
+                        scroll_area.show_rows(
+                            ui,
+                            100.0,
+                            self.focused_category_streams.iter().len(),
+                            |ui, _row_range| {
+                                for stream in self.focused_category_streams.iter().flatten() {
+                                    let stream_button =
+                                        self.build_stream_button(stream.clone(), ui);
+                                    if stream_button.response.clicked() {
+                                        self.focused_stream = Option::from(stream.clone());
+                                    }
                                 }
-                                ui.label(stream.user_name.as_str());
-                            }
-
-                        });
+                            },
+                        );
                     }
                 }
             })
@@ -550,7 +652,6 @@ fn send_req(msg: TwitchMessage, tx: Sender<TwitchMessage>, ctx: Option<Context>)
 
         match msg.opt {
             TwitchOption::LoginCheck => {
-
                 let result = check_login(token).await;
                 let resp = TwitchMessage {
                     token: None,
@@ -575,7 +676,7 @@ fn send_req(msg: TwitchMessage, tx: Sender<TwitchMessage>, ctx: Option<Context>)
                     opt: StreamsResult(result),
                 };
                 tx.send(resp).expect("Failed to send resp");
-            },
+            }
             GetFollowedStreams => {
                 let result = get_followed_streams(token, None).await;
 
@@ -584,7 +685,7 @@ fn send_req(msg: TwitchMessage, tx: Sender<TwitchMessage>, ctx: Option<Context>)
                     opt: GetFollowedStreamsResult(result),
                 };
                 tx.send(resp).expect("Failed to send resp");
-            },
+            }
             GetCategoryStreams(category) => {
                 let result = get_streams(token, Some(category.clone()), None).await;
 

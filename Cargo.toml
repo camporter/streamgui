@@ -10,8 +10,8 @@ readme = "README.md"
 tokio = {version = "1.47.1", features = ["net", "rt-multi-thread", "process"]}
 eframe = "0.33.2"
 
-egui_extras = { version = "0.33.2", features = ["all_loaders"] }
-
+egui_extras = { version = "0.33.3", features = ["all_loaders"] }
+image = { version = "*", features = ["jpeg"]}
 reqwest = { version = "0.12.23", features = ["json"] }
 serde = "1.0.228"
 serde_derive = "1.0.228"
